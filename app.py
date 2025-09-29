@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from urllib import request
 from urllib.parse import quote
+from starlette.concurrency import iterate_in_threadpool
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -131,16 +132,24 @@ async def log_requests(request: Request, call_next):
     try:
         client = request.client.host if request.client else "-"
         logger.info(f"REQ {request.method} {request.url.path} | client={client} | query={dict(request.query_params)}")
+
         response = await call_next(request)
-        # Attempt to peek code/message if our shape
+
         try:
-            body: bytes = b"".join([chunk async for chunk in response.body_iterator])  # type: ignore
-            response.body_iterator = iter([body])  # reattach
-            payload = body.decode("utf-8") if body else ""
-            logger.info(f"RESP {request.method} {request.url.path} | status={response.status_code} | body={payload[:500]}")
+            body = b""
+            async for chunk in response.body_iterator:
+                body += chunk
+
+            payload = body.decode("utf-8", "ignore") if body else ""
+            logger.info(
+                f"RESP {request.method} {request.url.path} | status={response.status_code} | body={payload[:500]}"
+            )
+            response.body_iterator = iterate_in_threadpool(iter([body]))
         except Exception:
             logger.info(f"RESP {request.method} {request.url.path} | status={response.status_code}")
+
         return response
+
     except Exception as e:
         logger.exception(f"Unhandled error in middleware: {e}")
         return JSONResponse(status_code=500, content=ApiResponse(code=0, message="Internal Server Error").dict())
@@ -166,6 +175,7 @@ async def get_sas(
     try:
         _ = auth.verify_and_match(request, character_id)
     except ValueError as e:
+        print(f"Auth failed: {e}")
         return JSONResponse(
             status_code=401,
             content=ApiResponse(code=0, message=str(e)).dict()
@@ -202,7 +212,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "app:app",
         host="0.0.0.0",
-        port=int(os.getenv("PORT", "8000")),
+        port=int(os.getenv("PORT", "8001")),
         reload=True,
         workers=1,
     )

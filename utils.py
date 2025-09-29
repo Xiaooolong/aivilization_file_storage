@@ -24,12 +24,6 @@ class JWTAuth:
             if len(parts) == 2 and parts[0].lower() == "bearer":
                 return parts[1]
 
-        header = request.headers.get("Authorization")
-        if header:
-            parts = header.strip().split()
-            if len(parts) == 2 and parts[0].lower() == "bearer":
-                return parts[1]
-
         return None
 
     def verify_and_match(self, request: Request, character_id: str) -> Dict[str, Any]:
@@ -52,16 +46,20 @@ class JWTAuth:
                 token,
                 self.public_key,
                 algorithms=["RS256"],
-                options={"require": ["exp", "iat"], "verify_exp": True},
+                options={"require": ["exp", "iat"], "verify_exp": True, "verify_aud": False},
             )
-        except jwt.ExpiredSignatureError:
-            raise ValueError("Token expired")
-        except jwt.InvalidTokenError:
-            raise ValueError("Invalid token")
-        except Exception:
-            raise ValueError("Invalid token")
+        # except jwt.ExpiredSignatureError:
+        #     raise ValueError("Token expired")
+        # except jwt.InvalidTokenError:
+        #     raise ValueError("Invalid token")
+        # except Exception:
+        #     raise ValueError("Invalid token")
+        except Exception as e:
+            logger.error(f"JWT decode error: {e}")
+            raise ValueError("Invalid token.")
 
         if str(claims.get("characterId")) != str(character_id):
-            raise ValueError("characterId mismatch")
+            logger.error(f"JWT decode error: {claims.get('characterId')} != {character_id} mismatch.")
+            raise ValueError("Invalid token.")
 
         return claims
