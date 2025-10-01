@@ -42,7 +42,7 @@ CONTAINER_MAP = {
     "en": os.getenv("AZURE_BLOB_CONTAINER_EN", "reports-en"),
 }
 
-# 证书容器：certificates-<locale>
+# 证书容器：certificates-<region>
 CERT_CONTAINER_MAP = {
     "cn": os.getenv("AZURE_BLOB_CERT_CONTAINER_CN", "certificates-cn"),
     "hk": os.getenv("AZURE_BLOB_CERT_CONTAINER_HK", "certificates-hk"),
@@ -50,15 +50,15 @@ CERT_CONTAINER_MAP = {
 }
 
 
-# 2) 用启动时传入的 APP_LOCALE 选择默认容器（不传则默认 cn）
-APP_LOCALE = os.getenv("APP_LOCALE", "cn").lower()
-if APP_LOCALE not in CONTAINER_MAP:
+# 2) 用启动时传入的 APP_REGION 选择默认容器（不传则默认 cn）
+APP_REGION = os.getenv("APP_REGION", "cn").lower()
+if APP_REGION not in CONTAINER_MAP:
     # 给个安全兜底，避免拼错导致 KeyError
-    APP_LOCALE = "cn"
+    APP_REGION = "cn"
 
 # 兼容：仍保留旧的 CONTAINER_NAME 变量，用于 build_sas_url 的默认值
-CONTAINER_NAME = CONTAINER_MAP[APP_LOCALE]
-CERT_CONTAINER_NAME = CERT_CONTAINER_MAP[APP_LOCALE]
+CONTAINER_NAME = CONTAINER_MAP[APP_REGION]
+CERT_CONTAINER_NAME = CERT_CONTAINER_MAP[APP_REGION]
 
 
 
@@ -214,7 +214,7 @@ async def get_report_sas(
     request: Request,
     character_id: str,
     container: Optional[str] = None,
-    locale: Optional[str] = None,
+    region: Optional[str] = None,
     view: Optional[str] = None,            # 新增：inline / attachment
     filename: Optional[str] = None,        # 新增：自定义文件名（可选）
     content_type: Optional[str] = None,    # 新增：覆盖 content-type（可选）
@@ -223,7 +223,7 @@ async def get_report_sas(
     Return a temporary SAS url for a given character_id.
     Query param:
       - container: 覆盖容器名
-      - locale:    cn / hk / en （与 CONTAINER_MAP 关联）
+      - region:    cn / hk / en （与 CONTAINER_MAP 关联）
       - view:      inline / attachment（默认保持原先语义：attachment）
       - filename:  自定义下载/预览显示的文件名（可选）
       - content_type: 默认 application/pdf
@@ -241,8 +241,8 @@ async def get_report_sas(
 
     try:
         container_name = container
-        if not container_name and locale:
-            container_name = CONTAINER_MAP.get(locale.lower())
+        if not container_name and region:
+            container_name = CONTAINER_MAP.get(region.lower())
         if not container_name:
             container_name = CONTAINER_NAME
 
@@ -280,7 +280,7 @@ async def get_certificate_sas(
     request: Request,
     character_id: str,
     container: Optional[str] = None,
-    locale: Optional[str] = None,
+    region: Optional[str] = None,
     view: Optional[str] = None,            # inline / attachment
     filename: Optional[str] = None,        # 自定义下载/预览显示的文件名（可选）
 ) -> ApiResponse:
@@ -288,8 +288,8 @@ async def get_certificate_sas(
     Return a temporary SAS url for the PNG certificate of a given character_id.
 
     Query param:
-      - container: 覆盖容器名（不传则按 locale / 默认）
-      - locale:    cn / hk / en （与 CERT_CONTAINER_MAP 关联）
+      - container: 覆盖容器名（不传则按 region / 默认）
+      - region:    cn / hk / en （与 CERT_CONTAINER_MAP 关联）
       - view:      inline / attachment（默认 attachment）
       - filename:  自定义文件名（可选）
     """
@@ -303,12 +303,12 @@ async def get_certificate_sas(
         )
 
     try:
-        # 选择容器：优先 container 参数，其次 locale 对应的证书容器，最后用默认证书容器
+        # 选择容器：优先 container 参数，其次 region 对应的证书容器，最后用默认证书容器
         container_name = container
-        if not container_name and locale:
-            container_name = CERT_CONTAINER_MAP.get(locale.lower())
+        if not container_name and region:
+            container_name = CERT_CONTAINER_MAP.get(region.lower())
         if not container_name:
-            container_name = CERT_CONTAINER_MAP.get(APP_LOCALE, "certificates-cn")
+            container_name = CERT_CONTAINER_MAP.get(APP_REGION, "certificates-cn")
         if not container_name:
             container_name = CERT_CONTAINER_NAME
 
