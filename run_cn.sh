@@ -1,5 +1,5 @@
 export APP_LOCALE=cn
-export PORT=8000
+export PORT=8098
 gunicorn app:app \
     -k uvicorn.workers.UvicornWorker \
     -w 4 \

@@ -39,6 +39,14 @@ CONTAINER_MAP = {
     "en": os.getenv("AZURE_BLOB_CONTAINER_EN", "reports-en"),
 }
 
+# 证书容器：certificates-<locale>
+CERT_CONTAINER_MAP = {
+    "cn": os.getenv("AZURE_BLOB_CERT_CONTAINER_CN", "certificates-cn"),
+    "hk": os.getenv("AZURE_BLOB_CERT_CONTAINER_HK", "certificates-hk"),
+    "en": os.getenv("AZURE_BLOB_CERT_CONTAINER_EN", "certificates-en"),
+}
+
+
 # 2) 用启动时传入的 APP_LOCALE 选择默认容器（不传则默认 cn）
 APP_LOCALE = os.getenv("APP_LOCALE", "cn").lower()
 if APP_LOCALE not in CONTAINER_MAP:
@@ -47,6 +55,8 @@ if APP_LOCALE not in CONTAINER_MAP:
 
 # 兼容：仍保留旧的 CONTAINER_NAME 变量，用于 build_sas_url 的默认值
 CONTAINER_NAME = CONTAINER_MAP[APP_LOCALE]
+CERT_CONTAINER_NAME = CERT_CONTAINER_MAP[APP_LOCALE]
+
 
 
 # ----------------------------
@@ -98,13 +108,34 @@ def resolve_blob_name(character_id: str) -> Optional[str]:
     return f"{character_id}.pdf"
 
 
-async def build_sas_url(character_id: str, *, container_name: Optional[str] = None) -> str:
+async def build_sas_url(
+    character_id: str,
+    *,
+    container_name: Optional[str] = None,
+    view: str = "attachment",                # "inline" 或 "attachment"
+    filename: Optional[str] = None,          # 覆盖文件名（可选）
+    content_type: str = "application/pdf",   # 默认 PDF
+    blob_name_override: Optional[str] = None # ✅ 新增：可自定义 blob 名
+) -> str:
+
     account_name, account_key, endpoint_suffix = parse_conn_str(CONNECTION_STRING)
     container = container_name or CONTAINER_NAME
 
-    blob_name = resolve_blob_name(character_id)
+    blob_name = blob_name_override or resolve_blob_name(character_id)
     if not blob_name:
         raise FileNotFoundError("Blob not found for given character_id")
+
+    # 生成 Content-Disposition
+    # - inline：浏览器内嵌预览
+    # - attachment：浏览器下载
+    disp = "inline" if view.lower() == "inline" else "attachment"
+
+    # 文件名（默认取 blob basename）
+    basename = filename or os.path.basename(blob_name)
+
+    # 注意：这里 filename 放在 header 里需要做 URL 编码，
+    # 以避免空格/中文/特殊字符导致的 header 格式问题。
+    encoded_filename = quote(basename)
 
     now = datetime.utcnow()
     start = now - timedelta(minutes=5)
@@ -119,12 +150,21 @@ async def build_sas_url(character_id: str, *, container_name: Optional[str] = No
         expiry=expiry,
         start=start,
         protocol="https",
-        content_disposition=f'attachment; filename="{quote(os.path.basename(blob_name))}"',
-        content_type="application/pdf",
+        # 下面两个参数会在 SAS 中产生 rscd / rsct，
+        # 且在响应时覆盖 Content-Disposition / Content-Type。
+        content_disposition=f'{disp}; filename="{encoded_filename}"',
+        content_type=content_type,
     )
 
     url = f"https://{account_name}.blob.{endpoint_suffix}/{container}/{blob_name}?{sas}"
+    logger.info(f"build_sas_url: character_id={character_id}, view={view}, container={container_name}")
+    from urllib.parse import quote as urlquote
+    ascii_fallback = basename.encode('ascii', 'ignore').decode('ascii') or 'report.pdf'
+    # content_disposition = f'{disp}; filename="{ascii_fallback}"; filename*=UTF-8\'\'{urlquote(basename, safe="")}'
+    content_disposition = f'{disp}; filename="{ascii_fallback}"; filename*=UTF-8\'\'{urlquote(basename, safe="")}'
+    logger.info(f"SAS override headers going to Azure: Content-Disposition='{content_disposition}', Content-Type='{content_type}'")
     return url
+
 
 
 @app.middleware("http")
@@ -160,17 +200,81 @@ async def health() -> ApiResponse:
     return ApiResponse(code=1, message="OK", data={"version": app.version})
 
 
-@app.get("/characters/{character_id}/sas", response_model=ApiResponse)
+@app.get("/sas/report/{character_id}", response_model=ApiResponse)
 async def get_sas(
     request: Request,
     character_id: str,
     container: Optional[str] = None,
     locale: Optional[str] = None,
+    view: Optional[str] = None,            # 新增：inline / attachment
+    filename: Optional[str] = None,        # 新增：自定义文件名（可选）
+    content_type: Optional[str] = None,    # 新增：覆盖 content-type（可选）
 ) -> ApiResponse:
     """
     Return a temporary SAS url for a given character_id.
-    Query param `container` can override the default container.
-    Query param `locale` can be one of: cn / hk / en.
+    Query param:
+      - container: 覆盖容器名
+      - locale:    cn / hk / en （与 CONTAINER_MAP 关联）
+      - view:      inline / attachment（默认保持原先语义：attachment）
+      - filename:  自定义下载/预览显示的文件名（可选）
+      - content_type: 默认 application/pdf
+    """
+    # logger.info(f"get_sas view={view!r} -> view_mode={view_mode!r}, container_name={container_name!r}")
+
+    try:
+        _ = auth.verify_and_match(request, character_id)
+    except ValueError as e:
+        print(f"Auth failed: {e}")
+        return JSONResponse(
+            status_code=401,
+            content=ApiResponse(code=0, message=str(e)).dict()
+        )
+
+    try:
+        container_name = container
+        if not container_name and locale:
+            container_name = CONTAINER_MAP.get(locale.lower())
+
+        # 默认与原实现一致：不传 view 时按 attachment 生成（避免行为突变）
+        view_mode = (view or "attachment").lower()
+        if view_mode not in ("inline", "attachment"):
+            view_mode = "attachment"
+
+        logger.info(f"get_sas resolved -> view_mode={view_mode!r}, container_name={container_name!r}, filename={filename!r}")
+
+
+        url = await build_sas_url(
+            character_id,
+            container_name=container_name,
+            view=view_mode,
+            filename=filename,
+            content_type=content_type or "application/pdf",
+        )
+        return ApiResponse(code=1, message="Success", data=url)
+    except FileNotFoundError as e:
+        return ApiResponse(code=0, message=str(e))
+    except Exception as e:
+        logger.exception(f"SAS generation failed for character_id={character_id}: {e}")
+        return ApiResponse(code=0, message="Failed to generate SAS link")
+
+
+@app.get("/sas/certificate/{character_id}", response_model=ApiResponse)
+async def get_certificate_sas(
+    request: Request,
+    character_id: str,
+    container: Optional[str] = None,
+    locale: Optional[str] = None,
+    view: Optional[str] = None,            # inline / attachment
+    filename: Optional[str] = None,        # 自定义下载/预览显示的文件名（可选）
+) -> ApiResponse:
+    """
+    Return a temporary SAS url for the PNG certificate of a given character_id.
+
+    Query param:
+      - container: 覆盖容器名（不传则按 locale / 默认）
+      - locale:    cn / hk / en （与 CERT_CONTAINER_MAP 关联）
+      - view:      inline / attachment（默认 attachment）
+      - filename:  自定义文件名（可选）
     """
     try:
         _ = auth.verify_and_match(request, character_id)
@@ -180,21 +284,40 @@ async def get_sas(
             status_code=401,
             content=ApiResponse(code=0, message=str(e)).dict()
         )
-        
+
     try:
+        # 选择容器：优先 container 参数，其次 locale 对应的证书容器，最后用默认证书容器
         container_name = container
         if not container_name and locale:
-            container_name = CONTAINER_MAP.get(locale.lower())
+            container_name = CERT_CONTAINER_MAP.get(locale.lower())
+        if not container_name:
+            container_name = CERT_CONTAINER_MAP.get(APP_LOCALE, "certificates-cn")
 
-        url = await build_sas_url(character_id, container_name=container_name)
+        # 视图模式：默认 attachment
+        view_mode = (view or "attachment").lower()
+        if view_mode not in ("inline", "attachment"):
+            view_mode = "attachment"
+
+        logger.info(f"get_certificate_sas -> view_mode={view_mode!r}, container_name={container_name!r}, filename={filename!r}")
+
+        # 证书固定是 PNG：blob 名形如 <char_id>.png
+        png_blob_name = f"{character_id}.png"
+
+        url = await build_sas_url(
+            character_id,
+            container_name=container_name,
+            view=view_mode,
+            filename=filename or png_blob_name,   # 下载/预览时显示的文件名
+            content_type="image/png",             # ✅ PNG
+            blob_name_override=png_blob_name      # ✅ 指定证书的 blob 路径
+        )
         return ApiResponse(code=1, message="Success", data=url)
+
     except FileNotFoundError as e:
         return ApiResponse(code=0, message=str(e))
     except Exception as e:
-        logger.exception(f"SAS generation failed for character_id={character_id}: {e}")
-        return ApiResponse(code=0, message="Failed to generate SAS link")
-
-
+        logger.exception(f"Certificate SAS generation failed for character_id={character_id}: {e}")
+        return ApiResponse(code=0, message="Failed to generate certificate SAS link")
 
 @app.exception_handler(404)
 async def not_found_handler(request: Request, exc):
