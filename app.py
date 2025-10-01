@@ -18,6 +18,7 @@ from utils import JWTAuth
 from azure.storage.blob import (
     generate_blob_sas,
     BlobSasPermissions,
+    BlobServiceClient
 )
 
 load_dotenv(override=False)
@@ -31,6 +32,8 @@ try:
 except Exception:
     JWT_PUBLIC_KEY = None
 auth = JWTAuth(public_key=JWT_PUBLIC_KEY)
+
+BLOB_SERVICE = BlobServiceClient.from_connection_string(CONNECTION_STRING)
 
 # 1) 把 .env 里的三个容器读出来
 CONTAINER_MAP = {
@@ -107,6 +110,12 @@ def resolve_blob_name(character_id: str) -> Optional[str]:
     # Example rule-based mapping
     return f"{character_id}.pdf"
 
+def blob_exists(container_name: str, blob_name: str) -> bool:
+    try:
+        bc = BLOB_SERVICE.get_blob_client(container=container_name, blob=blob_name)
+        return bc.exists()  # SDK 自带 exists()
+    except Exception:
+        return False
 
 async def build_sas_url(
     character_id: str,
@@ -201,7 +210,7 @@ async def health() -> ApiResponse:
 
 
 @app.get("/sas/report/{character_id}", response_model=ApiResponse)
-async def get_sas(
+async def get_report_sas(
     request: Request,
     character_id: str,
     container: Optional[str] = None,
@@ -234,6 +243,8 @@ async def get_sas(
         container_name = container
         if not container_name and locale:
             container_name = CONTAINER_MAP.get(locale.lower())
+        if not container_name:
+            container_name = CONTAINER_NAME
 
         # 默认与原实现一致：不传 view 时按 attachment 生成（避免行为突变）
         view_mode = (view or "attachment").lower()
@@ -242,6 +253,12 @@ async def get_sas(
 
         logger.info(f"get_sas resolved -> view_mode={view_mode!r}, container_name={container_name!r}, filename={filename!r}")
 
+        blob_name = resolve_blob_name(character_id)
+        if not blob_exists(container_name, blob_name):
+            return JSONResponse(
+                status_code=404,
+                content=ApiResponse(code=0, message="Not Found").dict()
+            )
 
         url = await build_sas_url(
             character_id,
@@ -292,6 +309,8 @@ async def get_certificate_sas(
             container_name = CERT_CONTAINER_MAP.get(locale.lower())
         if not container_name:
             container_name = CERT_CONTAINER_MAP.get(APP_LOCALE, "certificates-cn")
+        if not container_name:
+            container_name = CERT_CONTAINER_NAME
 
         # 视图模式：默认 attachment
         view_mode = (view or "attachment").lower()
@@ -302,6 +321,12 @@ async def get_certificate_sas(
 
         # 证书固定是 PNG：blob 名形如 <char_id>.png
         png_blob_name = f"{character_id}.png"
+
+        if not blob_exists(container_name, png_blob_name):
+            return JSONResponse(
+                status_code=404,
+                content=ApiResponse(code=0, message="Not Found").dict()
+            )
 
         url = await build_sas_url(
             character_id,
