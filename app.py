@@ -264,7 +264,7 @@ async def get_report_sas(
             character_id,
             container_name=container_name,
             view=view_mode,
-            filename=filename,
+            filename="LifeReport.pdf",
             content_type=content_type or "application/pdf",
         )
         return ApiResponse(code=1, message="Success", data=url)
@@ -332,7 +332,7 @@ async def get_certificate_sas(
             character_id,
             container_name=container_name,
             view=view_mode,
-            filename=filename or png_blob_name,   # 下载/预览时显示的文件名
+            filename="Certificate.png",   # 下载/预览时显示的文件名
             content_type="image/png",             # ✅ PNG
             blob_name_override=png_blob_name      # ✅ 指定证书的 blob 路径
         )
