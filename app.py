@@ -255,10 +255,11 @@ async def get_report_sas(
 
         blob_name = resolve_blob_name(character_id)
         if not blob_exists(container_name, blob_name):
-            return JSONResponse(
-                status_code=404,
-                content=ApiResponse(code=0, message="Not Found").dict()
-            )
+            # return JSONResponse(
+            #     status_code=404,
+            #     content=ApiResponse(code=0, message="Not Found").dict()
+            # )
+            return ApiResponse(code=0, message="Not Listed", data=None)
 
         url = await build_sas_url(
             character_id,
@@ -323,10 +324,11 @@ async def get_certificate_sas(
         png_blob_name = f"{character_id}.png"
 
         if not blob_exists(container_name, png_blob_name):
-            return JSONResponse(
-                status_code=404,
-                content=ApiResponse(code=0, message="Not Found").dict()
-            )
+            # return JSONResponse(
+            #     status_code=404,
+            #     content=ApiResponse(code=0, message="Not Found").dict()
+            # )
+            return ApiResponse(code=0, message="Not Listed", data=None)
 
         url = await build_sas_url(
             character_id,
